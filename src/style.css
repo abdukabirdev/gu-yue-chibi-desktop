@@ -50,3 +50,22 @@ html, body { margin:0; height:100%; overflow:hidden; background:transparent; use
 @keyframes pt { 0% { opacity:0; transform:translate(0,0) scale(.6) } 20% { opacity:1 }
                 100% { opacity:0; transform:translate(var(--dx,6px),-46px) scale(1.15) } }
 @keyframes dust { 0% { opacity:.9; transform:translate(0,0) scale(.5) } 100% { opacity:0; transform:translate(var(--dx,10px),-14px) scale(1.6) } }
+
+/* Уступает дорогу курсору: полупрозрачный, клики проходят сквозь него */
+.c { transition:opacity .2s; }
+.c.ghost { opacity:.3; }
+/* Видео/игра на весь экран или «не мешать» — прячется целиком */
+body.away .c, body.away .b, body.away .dust { opacity:0 !important; pointer-events:none; }
+
+/* Меню по правому клику */
+.mn { position:fixed; left:0; top:0; z-index:10; min-width:210px; padding:6px; display:flex; flex-direction:column; gap:1px;
+      background:#fff; color:#222; border-radius:12px; box-shadow:0 6px 24px rgba(0,0,0,.32);
+      font:500 13px/1.2 "Segoe UI", system-ui, sans-serif; }
+.mn .mh { font-size:11px; font-weight:600; color:#888; padding:4px 10px 6px; border-bottom:1px solid #eee; margin-bottom:2px; }
+.mn button { all:unset; padding:7px 10px; border-radius:8px; cursor:pointer; white-space:nowrap; }
+.mn button:hover { background:#f2f2f5; }
+.mn .row { display:flex; align-items:center; gap:4px; padding:3px 10px; }
+.mn .row span { color:#888; font-size:12px; min-width:58px; }
+.mn .row button { padding:4px 8px; background:#f2f2f5; font-size:12px; }
+.mn .row button:hover { background:#e6e6ec; }
+.mn .row button.on { background:#2b2b33; color:#fff; }

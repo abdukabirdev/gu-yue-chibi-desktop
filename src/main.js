@@ -70,10 +70,17 @@
   let walkPhase = 0, jumping = false, sliding = false, thrown = false, bounces = 0, maxImpact = 0, fallFrom = 0;
   let entering = false, airPeak = 0, airAt = 0, airPoseAt = 0, lastBonk = 0;
   let dragging = false, moved = false, dragDX = 0, dragDY = 0, downAt = 0, samples = [], pleadTimer = 0;
-  let blinkAt = 0, blinkEnd = 0, wallSide = 0, climbTarget = 0, climbPhase = 0, hangPhase = 0, fl = null, runTo = 0;
+  let blinkAt = 0, wallSide = 0, climbTarget = 0, climbPhase = 0, hangPhase = 0, fl = null, runTo = 0;
   let lastClick = 0, clickTimer = 0, idleMs = 0, wasAway = false, sleepManual = false, mood = null;
   let cursor = null;                         // { x, y, at } — где мышь (в координатах окна)
   const bornAt = now();
+  // окружение (от Rust): окна приложений, активное окно, каретка, клики, печать
+  let wins = [], covered = [], fg = null, lastFg = null;
+  let clickPt = null, caretPt = null, keyAt = 0, ctrlDown = false, clipSeq = null;
+  let hiddenFull = false, snoozeUntil = 0;
+  let walkTo = null, dodging = false, ghost = false, pursuit = null, lastCalm = 0, lastDodge = 0, lastGuardMove = 0;
+  let menuEl = null, menuTimer = 0, lastTalkAt = 0;
+  const hiddenNow = () => hiddenFull || Date.now() < snoozeUntil;
 
   const face = () => (mask === "cute" && CUTE_SKINS[skin] ? CUTE_SKINS[skin] : skin);
   const url = (p, k = face()) => "poses/" + k + "/" + p + ".webp";
@@ -91,6 +98,8 @@
   function facingOf(p) {
     const f = skinCfg.faces || {};
     if (p in f) return f[p];
+    const base = p.replace(/_\d+$/, "");             // промежуточный кадр (climb1_5) смотрит туда же, что и основной
+    if (base in f) return f[base];
     if (/^w\d|^walk/.test(p)) return f.walk ?? -1;
     if (/^r\d/.test(p)) return f.run ?? f.walk ?? -1;
     return 0;
@@ -265,6 +274,7 @@
     if (bubbleOn() && t < bubbleMin && !opt.force) { if (sayQueue.length < 2) sayQueue.push(text); return; }
     bubble.textContent = text;
     bubble.classList.add("on");
+    lastTalkAt = Date.now();
     bubbleMin = t + MIN_SHOW;
     bubbleEnd = t + clamp(2500 + text.length * 75, MIN_SHOW, 30000);
   }
@@ -290,6 +300,8 @@
     state = next;
     until = now() + ms;
     el.classList.remove("aura");
+    if (next !== "walk") walkTo = null;
+    if (next !== "run") dodging = false;
     switch (next) {
       case "walk":
         if (Math.random() < 0.5) dir = -dir;
@@ -309,6 +321,7 @@
         break;
       }
       case "react": setAnim("happy"); break;    // позу ставит тот, кто вызвал
+      case "look": case "caught": setAnim("breathe"); break;
       case "run": case "chase": walkPhase = 0; setAnim(""); break;
     }
   }
@@ -316,14 +329,158 @@
     const age = now() - bornAt;
     if (age < 7000) { Math.random() < 0.7 ? go("idle", rnd(2000, 3500)) : go("emote", rnd(2500, 4000)); return; }
     if (idleMs > SLEEP_AFTER) { sleepManual = false; go("sleep", 30000); return; }
-    const r = Math.random();
-    if (canFly() && age > 15000 && r < 0.06) { flyRandom(); return; }
+    const r = Math.random(), busy = working(), maxX = Math.max(0, vw() - curW);
+    if (canFly() && age > 15000 && r < (busy ? 0.03 : 0.06)) { if (busy) flyTo(bestSpot()); else flyRandom(); return; }
     if (r < 0.04) { go("meditate", rnd(8000, 15000)); if (Math.random() < 0.5) say(pick(["Дыши.", "Ци течёт.", "Тишина ума."])); return; }
-    if (age > 15000 && r > 0.86 && cursor && Date.now() - cursor.at < 4000 && cursor.y > vh() * 0.5) { go("chase", 6000); return; }
-    if (r < 0.14 && skinCfg.run) { runTo = clamp(rnd(0, vw() - curW), 0, vw() - curW); go("run", 7000); return; }
-    if (r < 0.55) go("walk", rnd(3000, 9000));
+    if (busy) {
+      // пока ты работаешь: держится пустых мест и краёв экрана, в центр не выходит
+      const best = bestSpot();
+      if (spotScore(best) - spotScore(x) > 0.6 && Math.abs(best - x) > H() * 0.4) { moveTo(best); return; }
+      const edge = x < H() * 0.3 ? -1 : x > maxX - H() * 0.3 ? 1 : 0;
+      if (edge && has("climb1") && r < 0.12) { startClimb(edge); return; }   // по краю — вверх по стене
+      if (r < 0.4) {                                                          // прохаживается возле своего места
+        const tx = clamp(x + rnd(-1, 1) * H() * 1.2, 0, maxX);
+        if (spotScore(tx) > spotScore(x) - 0.4) { walkTo = tx; go("walk", 12000); return; }
+      }
+      if (r < 0.75) go("idle", rnd(3000, 7000)); else go("emote", rnd(3500, 7000));
+      return;
+    }
+    // ты отдыхаешь — можно гулять где угодно, и по центру тоже
+    const t = Date.now(), handsOff = t - keyAt > 60000 && (!clickPt || t - clickPt.at > 60000);
+    if (age > 15000 && r > 0.86 && handsOff && cursor && t - cursor.at < 4000 && cursor.y > vh() * 0.5) { go("chase", 6000); return; }
+    if (r < 0.14 && skinCfg.run) { runTo = clamp(rnd(0, maxX), 0, maxX); go("run", 7000); return; }
+    if (r < 0.55) { walkTo = null; go("walk", rnd(3000, 9000)); }
     else if (r < 0.78) go("idle", rnd(2500, 6000));
     else go("emote", rnd(3500, 7000));
+  }
+
+  // ================= Где стоять: пустые места и края, подальше от того, с чем ты работаешь =================
+  const working = () => idleMs < 60000;     // минуту ничего не трогаешь — значит, отдыхаешь
+  const spotW = () => Math.max(curW, H() * 0.65);
+  // отрезки пола (низа экрана), над которыми есть окна приложений
+  function updateCover() {
+    const top = vh() - H() * 1.2;
+    const sp = wins.filter((r) => r[1] + r[3] > top && r[1] < vh() && r[0] < vw() && r[0] + r[2] > 0)
+      .map((r) => [Math.max(0, r[0]), Math.min(vw(), r[0] + r[2])]).sort((a, b) => a[0] - b[0]);
+    const out = [];
+    for (const s1 of sp) { const l = out[out.length - 1]; if (l && s1[0] <= l[1]) l[1] = Math.max(l[1], s1[1]); else out.push([...s1]); }
+    covered = out;
+  }
+  function freeFrac(a, b) {
+    if (b <= a) return 1;
+    let c = 0;
+    for (const [p, q] of covered) c += Math.max(0, Math.min(b, q) - Math.max(a, p));
+    return 1 - c / (b - a);
+  }
+  // куда смотрит пользователь: каретка ввода, свежий клик, курсор
+  function focusPoints() {
+    const t = Date.now(), pts = [];
+    if (caretPt && t - caretPt.at < 15000) pts.push({ x: caretPt.x, y: caretPt.y, w: 3 });
+    if (clickPt && t - clickPt.at < 45000) pts.push({ x: clickPt.x, y: clickPt.y, w: t - clickPt.at < 15000 ? 2 : 1 });
+    if (cursor && t - cursor.at < 3000) pts.push({ x: cursor.x, y: cursor.y, w: 1.5 });
+    return pts.filter((p) => p.y <= vh() && p.x >= 0 && p.x <= vw());   // клики по панели задач и другим мониторам не в счёт
+  }
+  function spotScore(sx, w = spotW()) {
+    const W = vw(), a = sx, b = sx + w, c = sx + w / 2;
+    let sc = 0;
+    if (working()) {
+      sc += 3 * freeFrac(a - 10, b + 10);                                     // где не закрывает окна
+      sc += 2 * Math.max(0, 1 - Math.min(a, W - b) / (W * 0.15));             // у краёв
+      sc -= 1.2 * Math.max(0, 1 - Math.abs(c - W / 2) / (W * 0.3));           // не в центре
+    } else sc += 0.5 * freeFrac(a, b);
+    const zoneTop = vh() - H() * 1.9;                                         // что он закрывает собой и облачком
+    for (const p of focusPoints()) {
+      if (p.y < zoneTop) continue;
+      const dx = p.x < a ? a - p.x : p.x > b ? p.x - b : 0;
+      sc -= p.w * 3 * Math.max(0, 1 - dx / (H() * 1.6));
+    }
+    return sc;
+  }
+  function bestSpot(avoidX, minDist = 0) {
+    const w = spotW(), maxX = Math.max(0, vw() - w), N = 28;
+    let best = x, bs = -1e9;
+    for (let i = 0; i <= N; i++) {
+      const sx = clamp(maxX * i / N + rnd(-8, 8), 0, maxX);
+      let sc = spotScore(sx, w) - Math.abs(sx - x) / vw() * 0.6 + rnd(0, 0.3);  // ближние места чуть лучше
+      if (avoidX != null && Math.abs(sx + w / 2 - avoidX) < minDist) sc -= 6;
+      if (sc > bs) { bs = sc; best = sx; }
+    }
+    return clamp(best, 0, Math.max(0, vw() - curW));
+  }
+  function moveTo(tx, hurry) {
+    const maxX = Math.max(0, vw() - curW);
+    tx = clamp(tx, 0, maxX);
+    const d = Math.abs(tx - x);
+    if (d < 8) return false;
+    if (!hurry && canFly() && d > vw() * 0.45 && Math.random() < 0.25) { flyTo(tx); return true; }
+    if (hurry || d > vw() * 0.3) { runTo = tx; go("run", 9000); return true; }
+    walkTo = tx; go("walk", 20000);
+    return true;
+  }
+
+  // ================= Не мешать: курсор, клики, печать =================
+  // Курсор подбирается к чиби — первые секунды он уступает дорогу (и становится «прозрачным» для кликов:
+  // вдруг ты тянешься к кнопке под ним). Гонишься дольше — сдаётся, можно схватить. С Ctrl — сразу.
+  const GIVE_UP = 2200;
+  function chibiRect() { const r = img.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; }
+  function cursorNear() {
+    if (!cursor) return false;
+    const r = chibiRect(), mx = H() * 0.45, my = H() * 0.35;
+    return cursor.x > r.l - mx && cursor.x < r.r + mx && cursor.y > r.t - my && cursor.y < r.b + my;
+  }
+  function setGhost(v) {
+    if (ghost === v) return;
+    ghost = v;
+    el.classList.toggle("ghost", v);
+    syncHit(now(), true);
+  }
+  function guardTick() {
+    const t = Date.now();
+    if (idleMs > 30000) lastCalm = t;
+    if (dragging || hiddenNow()) { setGhost(false); pursuit = null; return; }
+    if (cursorNear()) {
+      // вернулся после перерыва и сразу к нему — значит, хочешь поиграть, а не нажать кнопку
+      if (!pursuit) pursuit = { start: t, last: t, play: t - lastCalm < 8000, gave: false };
+      pursuit.last = t;
+    } else if (pursuit && t - pursuit.last > 1200) {
+      pursuit = null;
+      if (state === "caught") go("idle", rnd(800, 1500));
+    }
+    const letCatch = !pursuit || ctrlDown || pursuit.play || menuEl || state === "caught" || state === "sleep" || t - pursuit.start > GIVE_UP;
+    if (pursuit && !letCatch) {
+      setGhost(true);
+      if (t - lastDodge > 700) dodgeFrom(cursor.x);
+    } else {
+      setGhost(false);
+      if (pursuit && !pursuit.gave && !ctrlDown && !pursuit.play && t - pursuit.start > GIVE_UP) { pursuit.gave = true; giveUp(); }
+    }
+    if (!pursuit) focusGuard(t);
+  }
+  function dodgeFrom(cx) {
+    lastDodge = Date.now();
+    if (state === "climb" || state === "hang") { launch(-(wallSide || 1) * rnd(120, 220), 80, false); return; }
+    if (!ground || state === "seq" || state === "flight" || (state === "run" && dodging)) return;
+    const tx = bestSpot(cx, H() * 1.8);
+    if (Math.abs(tx - x) < 10) return;
+    runTo = tx; go("run", 5000); dodging = true;
+  }
+  function giveUp() {
+    if (!ground || state === "seq" || state === "flight") return;
+    pose(mask === "cute" ? "laugh" : pick(["pout", "think", "cool"]));
+    go("caught", 6000);
+    say(mask === "cute" ? pick(["Ладно-ладно, поймал~", "Сдаюсь ♡"]) : pick(["Ладно. Поймал.", "Тц. Лови.", "…Сдаюсь."]), { force: true });
+  }
+  // печатаешь или кликаешь рядом с ним — отходит, чтобы не закрывать поле ввода
+  function focusGuard(t) {
+    if (!working() || t - lastGuardMove < 2500) return;
+    const r = chibiRect(), m = H() * 0.5;
+    const hot = focusPoints().some((p) => p.w >= 2 && p.x > r.l - m && p.x < r.r + m && p.y > r.t - H() * 0.8 && p.y < r.b + 10);
+    if (!hot) return;
+    lastGuardMove = t;
+    if (state === "climb" || state === "hang") { launch(-(wallSide || 1) * rnd(120, 220), 80, false); return; }
+    if (!ground || !["idle", "emote", "walk", "meditate", "react", "look", "sleep"].includes(state)) return;
+    if (state === "sleep") sleepManual = false;
+    if (moveTo(bestSpot(), true) && Math.random() < 0.3) say(pick(["Не мешаю.", "Ухожу-ухожу.", "Работай."]));
   }
   function sleepNow(manual) {
     if (!ground || dragging) return;
@@ -353,12 +510,22 @@
   }
 
   // --- моргание в покое ---
+  // с кадрами полузакрытых глаз (blinkSeq: idle, idle_5, blink, blink_5): закрывает — закрыл — открывает
+  let blinkSteps = null;
   function blinkTick(t) {
     if (!has("blink")) return;
-    if (blinkEnd && t > blinkEnd) { blinkEnd = 0; if (curPose === "blink") pose("idle"); }
+    if (blinkSteps) {
+      if (state !== "idle") { blinkSteps = null; return; }
+      while (blinkSteps.length && t > blinkSteps[0][1]) blinkSteps.shift();
+      if (!blinkSteps.length) { blinkSteps = null; pose("idle"); return; }
+      pose(blinkSteps[0][0]);
+      return;
+    }
     if (state === "idle" && curPose === "idle" && t > blinkAt) {
-      pose("blink"); blinkEnd = t + 140;
-      blinkAt = t + (Math.random() < 0.2 ? 260 : rnd(2500, 5500)); // иногда моргает дважды
+      const sq = skinCfg.blinkSeq && skinCfg.blinkSeq.length >= 4 ? skinCfg.blinkSeq : null;
+      blinkSteps = sq ? [[sq[1], t + 45], [sq[2], t + 135], [sq[3], t + 180]] : [["blink", t + 140]];
+      pose(blinkSteps[0][0]);
+      blinkAt = t + (Math.random() < 0.2 ? 330 : rnd(2500, 5500)); // иногда моргает дважды
     }
   }
 
@@ -371,8 +538,10 @@
     const target = state === "chase" && cursor ? clamp(cursor.x - curW / 2, 0, maxX) : runTo;
     const dx = target - x;
     if (Math.abs(dx) < 14 || t > until) {
+      if (state === "run" && (dodging || working())) { pose("idle"); go("idle", rnd(2500, 4500)); return; }
+      const wasChase = state === "chase";
       pose("idle"); go("react", 1600);
-      if (state === "react" && Math.random() < 0.4) say(pick(["Здесь.", "Что?", "Звал?"]));
+      if (wasChase && Math.random() < 0.4) say(pick(["Здесь.", "Что?", "Звал?"]));
       return;
     }
     dir = Math.sign(dx);
@@ -385,18 +554,20 @@
   // --- лазание по краю экрана ---
   function startClimb(side) {
     wallSide = side; climbPhase = 0; dir = side;
-    climbTarget = rnd(140, Math.max(160, vh() - H() * 1.05));
+    climbTarget = working() ? rnd(H() * 0.8, Math.max(H(), vh() * 0.45)) : rnd(140, Math.max(160, vh() - H() * 1.05));
     ground = false; vy = vx = 0; state = "climb"; setAnim("");
   }
   function climbTick(dt) {
     x = wallSide > 0 ? Math.max(0, vw() - curW) : 0;
-    climbPhase += dt * 3.2 * Math.sqrt(speed());
-    pose(Math.floor(climbPhase) % 2 ? "climb2" : "climb1", wallSide);
+    const cf = skinCfg.climb || ["climb1", "climb2"];
+    climbPhase += dt * 3.2 * Math.sqrt(speed()) * cf.length / 2;     // больше кадров — тот же темп
+    pose(cf[Math.floor(climbPhase) % cf.length], wallSide);
     yb += 42 * speed() * dt * (H() / 140);
     const top = vh() - curH;
     if (yb >= top - 2) { yb = top; startHang(); return; }
     if (yb >= climbTarget) {
-      if (Math.random() < 0.5 && has("hang1")) { climbTarget = top; return; } // лезет до самого верха
+      // лезет до самого верха (только когда ты отдыхаешь: сверху вкладки и заголовки окон)
+      if (!working() && Math.random() < 0.5 && has("hang1")) { climbTarget = top; return; }
       say(pick(["Хм.", "Спускаюсь.", "…"]));
       launch(-wallSide * rnd(120, 320), rnd(150, 450), false);
     }
@@ -408,8 +579,9 @@
     if (Math.random() < 0.5) say(pick(["Обзор неплох.", "…", "Тренировка хвата."]));
   }
   function hangTick(dt, t) {
-    hangPhase += dt * 1.8;
-    pose(Math.floor(hangPhase) % 2 ? "hang2" : "hang1", 0);
+    const hf = skinCfg.hang || ["hang1", "hang2"];
+    hangPhase += dt * 1.8 * hf.length / 2;
+    pose(hf[Math.floor(hangPhase) % hf.length], 0);
     yb = vh() - curH;
     x = clamp(x + (wallSide ? -wallSide * 30 * dt : 0), 0, Math.max(0, vw() - curW)); // чуть отползает от угла
     if (t > until) { say(pick(["Хватит.", "…", "Спуск."])); launch(rnd(-80, 80), 0, false); }
@@ -486,7 +658,8 @@
     if (jumping) { airPoseSet(big && vy < 0 ? "fall" : "leap", look); return; }
     if (thrown) {
       if (Math.abs(vx) > 520 && Math.abs(vx) > Math.abs(vy) * 0.6) { airPoseSet("fly", look); return; }
-      airPoseSet(big ? "fall" : "held", look);
+      // не «held»: в этом кадре его держит рука за шкирку — в полёте её быть не должно
+      airPoseSet(vy > 250 && !big ? "leap" : "fall", look);
       return;
     }
     if (!big || now() - airAt < 160) return;
@@ -584,13 +757,21 @@
       if (t > until) { if (sleepManual || idleMs > SLEEP_AFTER) until = t + 30000; else wake("…Я просто моргнул."); }
       return;
     }
+    if (state === "caught" && pursuit) until = Math.max(until, t + 1500);   // ждёт, пока ты его ловишь
     if (state === "walk") {
       const frames = skinCfg.walk;
+      if (walkTo != null) {                           // идёт к выбранному месту
+        const d = walkTo - x;
+        if (Math.abs(d) < 6) { walkTo = null; go("idle", rnd(2500, 5000)); return; }
+        dir = Math.sign(d);
+      }
       walkPhase += dt * skinCfg.walkFps * speed();   // ноги в такт шагу: без «скольжения»
       pose(frames[Math.floor(walkPhase) % frames.length], dir);
-      x += dir * 55 * speed() * dt * (H() / 140);
+      const step = 55 * speed() * dt * (H() / 140);
+      x += dir * (walkTo != null ? Math.min(step, Math.abs(walkTo - x)) : step);
       const maxX = Math.max(0, vw() - curW);
       if (x < 0 || x > maxX) x = clamp(x, 0, maxX);
+      if (walkTo != null) { if (t > until) nextState(); return; }
       if ((x <= 0 && dir < 0) || (x >= maxX && dir > 0)) {
         // упёрся в край экрана — иногда лезет вверх
         if (has("climb1") && Math.random() < 0.4) { startClimb(x <= 0 ? -1 : 1); return; }
@@ -606,7 +787,7 @@
     const dt = Math.min(50, t - lastT) / 1000;
     lastT = t;
     const pdt = dt * 0.8;              // полёт и падение чуть замедлены — смотрится мягче
-    if (!dragging) {
+    if (!dragging && !hiddenNow()) {
       if (state === "climb") climbTick(dt);
       else if (state === "hang") hangTick(dt, t);
       else if (state === "flight") flightTick(dt);
@@ -620,21 +801,28 @@
     requestAnimationFrame(loop);
   }
 
-  // Сообщаем Rust, где сейчас чиби: там окно ловит мышь, в остальных местах клики проходят насквозь.
+  // Сообщаем Rust, где сейчас чиби и его меню: там окно ловит мышь, в остальных местах клики проходят насквозь.
+  // «Призрак» (уступает дорогу курсору) и спрятанный чиби мышь не ловят.
   let lastHit = "", lastHitAt = 0;
   function syncHit(t, force) {
-    const r = img.getBoundingClientRect();
-    const hx = r.left + r.width * 0.12, hy = r.top + r.height * 0.06, hw = r.width * 0.76, hh = r.height * 0.94;
-    const key = [hx, hy, hw, hh].map((v) => Math.round(v / 3)).join(",") + dragging;
+    const rects = [];
+    if (!ghost && !hiddenNow()) {
+      const r = img.getBoundingClientRect();
+      rects.push([r.left + r.width * 0.12, r.top + r.height * 0.06, r.width * 0.76, r.height * 0.94]);
+    }
+    if (menuEl) { const m = menuEl.getBoundingClientRect(); rects.push([m.left, m.top, m.width, m.height]); }
+    const key = rects.map((r) => r.map((v) => Math.round(v / 3)).join(",")).join(";") + dragging;
     if (key === lastHit || (!force && t - lastHitAt < 40)) return;
     lastHit = key; lastHitAt = t;
-    call("set_hit", { x: hx, y: hy, w: hw, h: hh, drag: dragging }).catch(() => {});
+    call("set_hit", { rects, drag: dragging }).catch(() => {});
   }
 
   // ================= Мышь: клик, двойной клик, перетаскивание, бросок =================
   el.addEventListener("pointerdown", (e) => {
+    if (e.button === 2) { e.preventDefault(); openMenu(e.clientX, e.clientY); return; }   // правый клик — меню
     if (e.button !== 0) return;
     e.preventDefault();
+    closeMenu();
     dragging = true; moved = false; downAt = now();
     dragDX = e.clientX - x;
     dragDY = (vh() - e.clientY) - yb;
@@ -678,6 +866,7 @@
     launch(tvx, tvy, true);
     // сильный бросок — кувырком, средний — летит «суперменом»
     spin = sp > 1900 && Math.random() < 0.6 ? clamp(tvx * 0.35, -1000, 1000) || 450 : 0;
+    airPoseAt = 0; airPose();          // сразу убираем кадр «за шкирку», без задержки
   }
   el.addEventListener("pointerup", onUp);
   el.addEventListener("pointercancel", onUp);
@@ -702,9 +891,186 @@
     }, 280);
   }
 
-  // ================= Система: бездействие пользователя, курсор, трей =================
-  async function pollIdle() {
-    try { idleMs = Number(await call("idle_ms")) || 0; } catch { idleMs = 0; }
+  // ================= Меню по правому клику =================
+  function openMenu(cx, cy) {
+    closeMenu();
+    const m = document.createElement("div");
+    m.className = "mn";
+    const head = document.createElement("div");
+    head.className = "mh";
+    head.textContent = (skin === "cloak" ? "Плащ" : "Ученик") + (mask === "cute" ? " · милый" : " · суровый");
+    m.appendChild(head);
+    const act = (fn) => (ev) => { ev.stopPropagation(); closeMenu(); fn(); };
+    const btn = (label, fn) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = label;
+      b.addEventListener("click", act(fn));
+      m.appendChild(b);
+    };
+    const chips = (title, opts, cur) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const lb = document.createElement("span"); lb.textContent = title; row.appendChild(lb);
+      for (const [label, id] of opts) {
+        const b = document.createElement("button");
+        b.type = "button"; b.textContent = label;
+        if (String(cur) === id.split(":")[1]) b.classList.add("on");
+        b.addEventListener("click", act(() => onTray(id)));
+        row.appendChild(b);
+      }
+      m.appendChild(row);
+    };
+    btn("👀  Что я сейчас делаю?", () => whatDoing());
+    btn("📋  Что в буфере обмена?", () => clipTick(true));
+    if (canFly() && ground) btn("🕊  Полетать", () => onTray("fly"));
+    if (ground && state !== "sleep") btn("🧘  Медитировать", () => { seq = null; go("meditate", rnd(10000, 15000)); say("Тишина ума."); });
+    btn(state === "sleep" ? "☀  Разбудить" : "💤  Уложить спать", () => onTray("sleep"));
+    chips("Образ", [["Плащ", "skin:cloak"], ["Ученик", "skin:disciple"], ["🎲", "skin:random"]], s.skin);
+    chips("Нрав", [["авто", "mood:auto"], ["милый", "mood:cute"], ["суровый", "mood:stern"]], s.mood);
+    chips("Размер", [["S", "size:100"], ["M", "size:140"], ["L", "size:200"], ["XL", "size:260"]], s.size);
+    btn("🙈  Не мешать 30 минут", () => onTray("snooze"));
+    btn("✕  Выход", () => call("quit").catch(() => {}));
+    m.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    m.addEventListener("contextmenu", (ev) => ev.preventDefault());
+    m.addEventListener("pointerenter", () => clearTimeout(menuTimer));
+    m.addEventListener("pointerleave", () => { clearTimeout(menuTimer); menuTimer = setTimeout(closeMenu, 2500); });
+    document.body.appendChild(m);
+    const w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = clamp(cx - w / 2, 6, Math.max(6, vw() - w - 6)) + "px";
+    m.style.top = clamp(cy - h - 12, 6, Math.max(6, vh() - h - 6)) + "px";
+    menuEl = m;
+    clearTimeout(menuTimer); menuTimer = setTimeout(closeMenu, 15000);
+    syncHit(now(), true);
+  }
+  function closeMenu() {
+    clearTimeout(menuTimer);
+    if (!menuEl) return;
+    menuEl.remove(); menuEl = null;
+    syncHit(now(), true);
+  }
+
+  // ================= Приложения: что открыто, какой код, что в буфере обмена =================
+  const EDITOR_EXE = /^(code|code - insiders|cursor|windsurf|vscodium|notepad\+\+|sublime_text|zed|(idea|pycharm|webstorm|phpstorm|rider|goland|clion|rustrover|rubymine)64)\.exe$/i;
+  const BROWSER_EXE = /^(chrome|msedge|firefox|browser|opera|brave|vivaldi|arc)\.exe$/i;
+  const CHAT_EXE = /^(telegram|whatsapp|discord|slack|teams|ms-teams|viber|skype|zoom)\.exe$/i;
+  const TERM_EXE = /^(windowsterminal|cmd|powershell|pwsh|wezterm-gui|alacritty|mintty|warp)\.exe$/i;
+  const PRIVATE = /mail|почта|outlook|telegram|whatsapp|bank|банк|click\.uz|payme|paynet|вход|login|sign ?in|password|пароль/i;
+  const short = (t, n) => window.Brain.short(t, n);
+  let fgKey = "", fgSince = 0, lastAppLine = 0, lastCodeTry = 0;
+  const codeSeen = new Map();
+
+  function editorFile(f) {
+    const m = f.title.replace(/^[●•*\s]+/, "").match(/[\w.\-]+\.[A-Za-z0-9]{1,8}\b/);
+    return m ? m[0] : "";
+  }
+  function appLines(f) {
+    const exe = f.exe.toLowerCase(), title = f.title;
+    if (EDITOR_EXE.test(exe)) { const fl = editorFile(f); return [fl ? `${fl}. Пиши аккуратно.` : "Код. Не торопись.", "Сохраняй чаще.", "Коммить маленькими кусками."]; }
+    if (BROWSER_EXE.test(exe)) {
+      const page = title.replace(/\s[-—–]\s[^-—–]*(Chrome|Edge|Firefox|Opera|Brave|Vivaldi|Яндекс|Yandex|Arc)[^-—–]*$/i, "").trim();
+      if (!page) return ["Браузер. Не отвлекайся."];
+      if (PRIVATE.test(page)) return ["Личное. Не смотрю."];
+      if (/ - YouTube$/.test(page)) { const v = page.replace(/^\(\d+\)\s*/, "").replace(/ - YouTube$/, ""); return [`Видео: «${short(v, 40)}». Полезно?`, "YouTube. Это для работы?"]; }
+      if (/GitHub/.test(page)) { const pr = page.match(/#(\d+)/); return pr ? [`#${pr[1]}. Проверь тесты.`, `#${pr[1]}. Конфликты?`] : ["GitHub. Хм.", `«${short(page, 40)}».`]; }
+      if (/Stack Overflow/.test(page)) return ["Смотри принятый ответ, не первый.", "Ответ нашёл?"];
+      if (/ - (Поиск в Google|Google Search|Google)$/.test(page)) { const q = page.replace(/ - (Поиск в Google|Google Search|Google)$/, ""); return [`Ищешь «${short(q, 40)}».`, `«${short(q, 30)}». Уточни запрос.`]; }
+      if (/ChatGPT|Gemini|Claude/.test(page)) return ["Спрашиваешь нейросеть? Проверяй ответы.", "Хм. А сам подумать?"];
+      return [`«${short(page, 44)}».`, "Читаешь? Не отвлекайся."];
+    }
+    if (CHAT_EXE.test(exe)) return ["Переписка. Я не подглядываю.", "Ответь коротко и возвращайся к работе."];
+    if (TERM_EXE.test(exe)) return ["Терминал. Аккуратнее с rm -rf.", "Сначала прочитай, потом Enter.", "Команды. Хм. Уверен?"];
+    if (/^excel\.exe$/i.test(exe)) return ["Таблицы. Проверь формулы.", "Проверь итоги."];
+    if (/^(winword|powerpnt|soffice\.bin)\.exe$/i.test(exe)) return [`«${short(title, 40)}». Документы.`, "Сохраняй чаще.", "Проверь опечатки."];
+    if (/^explorer\.exe$/i.test(exe)) return ["Ищешь файл?", "Порядок в папках — порядок в голове."];
+    if (/figma/i.test(exe)) return ["Дизайн. Выровняй по сетке.", "Отступы одинаковые?"];
+    return title && !PRIVATE.test(title) ? [`«${short(title, 40)}». Хм.`] : [];
+  }
+  // может ли он сейчас заговорить, никому не мешая
+  const canTalk = () => ground && !dragging && !bubbleOn() && !hiddenNow() && !menuEl &&
+    ["idle", "emote", "walk", "look", "meditate"].includes(state) && Date.now() - lastTalkAt > 20000;
+  function lookAt(text) {
+    seq = null;
+    pose(has("read") ? "read" : "think");
+    go("look", clamp(2500 + text.length * 40, 4000, 9000));
+    say(text, { force: true });
+  }
+  // Открытый в редакторе файл: находим его на диске по заголовку окна и читаем (локально, никуда не отправляется).
+  async function codeTick(force) {
+    const f = force ? lastFg : fg;
+    if (!f || !EDITOR_EXE.test(f.exe)) { if (force) say("Сейчас не вижу редактора кода."); return; }
+    const file = editorFile(f), key = f.exe + "|" + file;
+    if (!force && (!file || Date.now() - (codeSeen.get(key) || 0) < 15 * 60000)) return;
+    codeSeen.set(key, Date.now());
+    let r = null;
+    try { r = await call("read_code", { title: f.title, exe: f.exe }); } catch {}
+    if (!r || !r.text || !r.text.trim()) { if (force) say(file ? `${file}… не нашёл этот файл на диске.` : "Не понял, какой файл открыт."); return; }
+    const a = window.Brain.analyzeCode(r.text);
+    if (!force && (!canTalk() || (!a.issues.length && Math.random() < 0.65))) return;   // нечего сказать — молчит
+    lookAt(`📄 ${r.name}: ${window.Brain.codeComment(r.text)}`);
+  }
+  // Скопировал текст — он смотрит, что это: JSON, время, цвет, base64, JWT, ошибка, регулярка, код…
+  const looksSecret = (t) => { const s1 = t.trim(); return s1.length >= 8 && s1.length <= 100 && !/\s/.test(s1) && /\d/.test(s1) && /[a-z]/i.test(s1) && /[^a-z0-9]/i.test(s1) && !/^(https?:|eyJ|#)/.test(s1); };
+  async function clipTick(force) {
+    let txt = null;
+    try { txt = await call("clipboard_text"); } catch {}
+    if (!txt || !txt.trim()) { if (force) say("В буфере пусто. Или там не текст."); return; }
+    txt = txt.slice(0, 20000);
+    if (!force && (looksSecret(txt) || !canTalk())) return;
+    const f = window.Brain.selectionFacts(txt);
+    if (!f) { if (force) say("Хм. Ничего интересного."); return; }
+    if (!force && !f.auto && !f.text.includes("⚠") && Math.random() < 0.7) return;
+    lookAt(f.text);
+  }
+  function whatDoing() {
+    const f = lastFg;
+    if (!f) { say("Не вижу, что открыто."); return; }
+    if (EDITOR_EXE.test(f.exe)) { codeTick(true); return; }
+    const l = appLines(f);
+    say(l.length ? pick(l) : "Хм. Не знаю эту программу.", { force: true });
+  }
+  function appTick() {
+    if (!fg || fg.own || hiddenNow()) return;
+    const key = fg.exe + "|" + fg.title;
+    if (key !== fgKey) { fgKey = key; fgSince = Date.now(); return; }
+    if (Date.now() - fgSince < 5000 || !canTalk()) return;
+    if (EDITOR_EXE.test(fg.exe) && Date.now() - lastCodeTry > 20000) { lastCodeTry = Date.now(); codeTick(false); return; }
+    if (Date.now() - lastAppLine > 5 * 60000 && Math.random() < 0.05) {
+      const l = appLines(fg);
+      if (l.length) { lastAppLine = Date.now(); say(pick(l)); }
+    }
+  }
+
+  // ================= Система: окружение от Rust, бездействие, трей =================
+  async function pollEnv() {
+    let e = null;
+    try { e = await call("env_info"); } catch {}
+    if (!e) return;
+    const t = Date.now();
+    if (e.cursor) {
+      const [cx, cy] = e.cursor;
+      if (!cursor || Math.abs(cursor.x - cx) + Math.abs(cursor.y - cy) > 3) cursor = { x: cx, y: cy, at: t };
+    }
+    onIdle(Number(e.idle) || 0);
+    keyAt = e.key_age > 1e12 ? 0 : t - e.key_age;
+    if (e.click) clickPt = { x: e.click[0], y: e.click[1], at: t - e.click[2] };
+    if (e.caret) caretPt = { x: e.caret[0] + e.caret[2] / 2, y: e.caret[1] + e.caret[3] / 2, at: t };
+    ctrlDown = !!e.ctrl;
+    fg = e.fg || null;
+    if (fg && !fg.own) lastFg = fg;
+    hiddenFull = !!(fg && fg.full && !fg.own);           // видео или игра на весь экран — не мешает
+    if (snoozeUntil && t > snoozeUntil) { snoozeUntil = 0; callDown(); }
+    if (clipSeq !== null && e.clip !== clipSeq) setTimeout(() => clipTick(false), 300);
+    clipSeq = e.clip;
+    document.body.classList.toggle("away", hiddenNow());
+    if (hiddenNow()) { closeMenu(); hideBubble(); }
+    guardTick();
+  }
+  async function pollWindows() {
+    try { wins = (await call("windows_list")) || []; } catch { wins = []; }
+    updateCover();
+  }
+  function onIdle(ms) {
+    idleMs = ms;
     if (idleMs > AWAY_AFTER) wasAway = true;
     else if (wasAway && idleMs < 4000) {                // вернулся к компьютеру — встречает мило
       wasAway = false;
@@ -712,19 +1078,10 @@
       if (ground && !dragging && s.mood === "auto") { setMask("cute", "back", 9000, pick(BACK_CUTE)); pose("wave"); go("react", 2200); }
     }
   }
-  async function pollCursor() {
-    try {
-      const p = await call("cursor_pos");
-      if (!p) return;
-      const [cx, cy] = p;
-      if (!cursor || Math.abs(cursor.x - cx) + Math.abs(cursor.y - cy) > 3) cursor = { x: cx, y: cy, at: Date.now() };
-    } catch {}
-  }
-
   function callDown() {
     if (dragging) return;
     fl = null; seq = null; sliding = false; el.classList.remove("aura", "sleeping");
-    x = clamp(vw() / 2 - curW / 2 + rnd(-vw() * 0.2, vw() * 0.2), 0, Math.max(0, vw() - curW));
+    x = working() ? bestSpot() : clamp(vw() / 2 - curW / 2 + rnd(-vw() * 0.2, vw() * 0.2), 0, Math.max(0, vw() - curW));
     yb = vh() - curH * 0.2;
     entering = true;
     launch(0, 0, false);
@@ -748,7 +1105,11 @@
       const it = u && frameCache.get(u);
       if (it && it.im.naturalHeight) { curH = H() * it.im.naturalHeight / 320; curW = H() * it.im.naturalWidth / 320; img.style.height = curH + "px"; }
       x = clamp(x, 0, Math.max(0, vw() - curW));
-    } else if (k === "call") callDown();
+    } else if (k === "call") { snoozeUntil = 0; document.body.classList.toggle("away", hiddenNow()); callDown(); }
+    else if (k === "snooze") {
+      say(pick(["Ладно. Не мешаю.", "Ушёл. Позови, если что."]), { force: true });
+      setTimeout(() => { snoozeUntil = Date.now() + 30 * 60000; closeMenu(); hideBubble(); document.body.classList.add("away"); syncHit(now(), true); }, 1500);
+    }
     else if (k === "fly") { if (canFly() && ground) flyRandom(true); else say(skin === "cloak" ? "Дай сначала встать." : "Без плаща не летаю."); }
     else if (k === "sleep") { if (state === "sleep") wake("Проснулся."); else sleepNow(true); }
   }
@@ -769,8 +1130,11 @@
     callDown();                                  // появляется: падает сверху и приземляется на панель задач
     if (TAURI) {
       TAURI.event.listen("tray", (e) => onTray(e.payload));
-      setInterval(pollIdle, 2000);
-      setInterval(pollCursor, 400);
+      TAURI.event.listen("outside-click", () => closeMenu());   // клик мимо меню — закрываем
+      setInterval(pollEnv, 120);
+      setInterval(pollWindows, 800);
+      setInterval(appTick, 1500);
+      pollWindows();
     }
     setInterval(maskTick, 15000);
     requestAnimationFrame((t) => { lastT = t; loop(t); });
