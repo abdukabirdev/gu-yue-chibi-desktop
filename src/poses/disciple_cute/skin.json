@@ -25,7 +25,7 @@
   "w6_2",
   "w6_3"
  ],
- "walkFps": 30.0,
+ "walkFps": 30,
  "faces": {
   "walk": 1,
   "fly": 1
@@ -76,8 +76,10 @@
   "w6_1",
   "w6_2",
   "w6_3",
-  "idle_5",
-  "blink_5"
+  "blink_half",
+  "wave2",
+  "sleep2",
+  "fall2"
  ],
  "ax": {
   "blink": 0.4838,
@@ -125,13 +127,38 @@
   "w6_1": 0.6,
   "w6_2": 0.4526,
   "w6_3": 0.6034,
-  "idle_5": 0.3502,
-  "blink_5": 0.3502
+  "blink_half": 0.4812,
+  "wave2": 0.5021,
+  "sleep2": 0.3784,
+  "fall2": 0.4857
  },
  "blinkSeq": [
   "idle",
-  "idle_5",
+  "blink_half",
   "blink",
-  "blink_5"
- ]
+  "blink_half"
+ ],
+ "loops": {
+  "wave": {
+   "f": [
+    "wave",
+    "wave2"
+   ],
+   "ms": 300
+  },
+  "sleep": {
+   "f": [
+    "sleep",
+    "sleep2"
+   ],
+   "ms": 1500
+  },
+  "fall": {
+   "f": [
+    "fall",
+    "fall2"
+   ],
+   "ms": 160
+  }
+ }
 }

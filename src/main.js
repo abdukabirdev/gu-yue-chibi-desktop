@@ -64,6 +64,8 @@
   const cfgCache = {};
   let skinCfg = { ...BASE_CFG };
   let curPose = "", curW = 100, curH = 140, curAx = 0.5, wantUrl = "", wantFlip = false;
+  // curPose — поза (wave), curFrame — нарисованный сейчас кадр (wave или wave2, если поза чередует кадры)
+  let curFrame = "", curLook, loopAt = 0;
   let x = 0, yb = 0, vx = 0, vy = 0, rot = 0, spin = 0, dir = 1;
   let ground = true;                         // стоит на полу (верх панели задач)
   let state = "idle", until = 0, seq = null;
@@ -141,12 +143,22 @@
     curAx = axOf(img.getAttribute("src") || "", wantFlip);
     img.style.height = curH + "px";
   });
+  // поза с несколькими кадрами (skin.json → loops: { wave: { f: ["wave", "wave2"], ms: 280 } }) — кадры сменяются по времени
+  function loopFrame(lp) {
+    const L = skinCfg.loops?.[lp];
+    if (!L) return lp;
+    const fr = L.f.filter(has);
+    return fr.length ? fr[Math.floor((now() - loopAt) / L.ms) % fr.length] : lp;
+  }
   function pose(p, look) {
-    const f = frameOf(p);
+    const lp = frameOf(p);
+    if (lp !== curPose) loopAt = now();
+    curPose = lp; curLook = look;
+    const f = loopFrame(lp);
     const fc = facingOf(f), lw = look ?? dir;
     const flip = fc !== 0 && lw !== 0 && Math.sign(lw) !== fc;
-    if (f !== curPose) {
-      curPose = f; wantFlip = flip;
+    if (f !== curFrame) {
+      curFrame = f; wantFlip = flip;
       const u = url(f); wantUrl = u;
       const it = frameImg(u);
       if (it.ready || !img.getAttribute("src")) showUrl(u);
@@ -197,7 +209,7 @@
   }
   function applyFace() {
     const p = curPose;
-    curPose = "";
+    curPose = ""; curFrame = "";
     skinCfg = cfgCache[face()] || { ...BASE_CFG };
     el.classList.toggle("cycle", skinCfg.walk.length >= 4);
     preload(face());
@@ -510,7 +522,7 @@
   }
 
   // --- моргание в покое ---
-  // с кадрами полузакрытых глаз (blinkSeq: idle, idle_5, blink, blink_5): закрывает — закрыл — открывает
+  // с кадрами полузакрытых глаз (blinkSeq: idle, blink_half, blink, blink_half): закрывает — закрыл — открывает
   let blinkSteps = null;
   function blinkTick(t) {
     if (!has("blink")) return;
@@ -794,6 +806,7 @@
       else if (!ground) { if (state !== "air") state = "air"; air(pdt); }
       else onGround(dt, t, pdt);
     }
+    if (skinCfg.loops?.[curPose]) pose(curPose, curLook);     // машет рукой, сопит во сне, плащ трепещет в падении
     el.style.transform = `translate(${x}px, ${-yb + feetPad()}px)`;
     spinEl.style.transform = rot ? `rotate(${rot}deg)` : "";
     bubbleTick(t);

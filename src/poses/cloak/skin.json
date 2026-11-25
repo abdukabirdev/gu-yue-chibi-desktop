@@ -103,8 +103,10 @@
   "r08_5",
   "hang1_5",
   "hang2_5",
-  "idle_5",
-  "blink_5"
+  "blink_half",
+  "wave2",
+  "sleep2",
+  "fall2"
  ],
  "run": [
   "r01",
@@ -194,8 +196,10 @@
   "r08_5": 0.3803,
   "hang1_5": 0.3655,
   "hang2_5": 0.3655,
-  "idle_5": 0.3438,
-  "blink_5": 0.3438
+  "blink_half": 0.4816,
+  "wave2": 0.4618,
+  "sleep2": 0.54,
+  "fall2": 0.4659
  },
  "hang": [
   "hang1",
@@ -205,8 +209,31 @@
  ],
  "blinkSeq": [
   "idle",
-  "idle_5",
+  "blink_half",
   "blink",
-  "blink_5"
- ]
+  "blink_half"
+ ],
+ "loops": {
+  "wave": {
+   "f": [
+    "wave",
+    "wave2"
+   ],
+   "ms": 300
+  },
+  "sleep": {
+   "f": [
+    "sleep",
+    "sleep2"
+   ],
+   "ms": 1500
+  },
+  "fall": {
+   "f": [
+    "fall",
+    "fall2"
+   ],
+   "ms": 160
+  }
+ }
 }

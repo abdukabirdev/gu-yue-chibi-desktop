@@ -25,7 +25,7 @@
   "w6_2",
   "w6_3"
  ],
- "walkFps": 30.0,
+ "walkFps": 30,
  "run": [
   "r1",
   "r1_5",
@@ -114,8 +114,10 @@
   "r4_5",
   "r5_5",
   "r6_5",
-  "idle_5",
-  "blink_5"
+  "blink_half",
+  "wave2",
+  "sleep2",
+  "fall2"
  ],
  "ax": {
   "blink": 0.4804,
@@ -183,13 +185,38 @@
   "r4_5": 0.4007,
   "r5_5": 0.4047,
   "r6_5": 0.4007,
-  "idle_5": 0.3488,
-  "blink_5": 0.3488
+  "blink_half": 0.4825,
+  "wave2": 0.4747,
+  "sleep2": 0.3931,
+  "fall2": 0.4376
  },
  "blinkSeq": [
   "idle",
-  "idle_5",
+  "blink_half",
   "blink",
-  "blink_5"
- ]
+  "blink_half"
+ ],
+ "loops": {
+  "wave": {
+   "f": [
+    "wave",
+    "wave2"
+   ],
+   "ms": 300
+  },
+  "sleep": {
+   "f": [
+    "sleep",
+    "sleep2"
+   ],
+   "ms": 1500
+  },
+  "fall": {
+   "f": [
+    "fall",
+    "fall2"
+   ],
+   "ms": 160
+  }
+ }
 }

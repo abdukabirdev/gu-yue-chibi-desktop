@@ -88,8 +88,9 @@
   "w14_5",
   "w15_5",
   "w16_5",
-  "idle_5",
-  "blink_5"
+  "blink_half",
+  "wave2",
+  "sleep2"
  ],
  "ax": {
   "blink": 0.483,
@@ -141,13 +142,30 @@
   "w14_5": 0.3885,
   "w15_5": 0.3885,
   "w16_5": 0.3929,
-  "idle_5": 0.3504,
-  "blink_5": 0.3504
+  "blink_half": 0.485,
+  "wave2": 0.4801,
+  "sleep2": 0.4075
  },
  "blinkSeq": [
   "idle",
-  "idle_5",
+  "blink_half",
   "blink",
-  "blink_5"
- ]
+  "blink_half"
+ ],
+ "loops": {
+  "wave": {
+   "f": [
+    "wave",
+    "wave2"
+   ],
+   "ms": 300
+  },
+  "sleep": {
+   "f": [
+    "sleep",
+    "sleep2"
+   ],
+   "ms": 1500
+  }
+ }
 }
